@@ -52,7 +52,8 @@ namespace {
         std::vector<SwapchainImages> images;
         uint32_t acquiredImageIndex{0};
         bool delayedRelease{false};
-
+        bool resolutionChangePending{false};
+    
         // Intermediate textures for processing.
         std::shared_ptr<graphics::ITexture> nonVPRTInputTexture;
         std::shared_ptr<graphics::ITexture> nonVPRTOutputTexture;
@@ -705,6 +706,7 @@ namespace {
                         m_upscaleMode == config::ScalingType::CAS
                     ) {
                         m_settingScaling = m_configManager->peekValue(config::SettingScaling);
+                        m_settingPreviousScaling = m_configManager->peekValue(config::SettingScaling);
                         m_settingAnamorphic = m_configManager->peekValue(config::SettingAnamorphic);
                     }
 
@@ -1037,6 +1039,9 @@ namespace {
                 return XR_ERROR_VALIDATION_FAILURE;
             }
 
+            static const int savedWidth = createInfo->width;
+            static const int savedHeight = createInfo->height;
+
             TraceLoggingWrite(g_traceProvider,
                               "xrCreateSwapchain",
                               TLPArg(session, "Session"),
@@ -1068,7 +1073,7 @@ namespace {
                 createInfo->format,
                 createInfo->usageFlags);
 
-            XrSwapchainCreateInfo chainCreateInfo = *createInfo;
+            chainCreateInfo = *createInfo;
             if (!isDepth) {
                 // Modify the swapchain to handle our processing chain (eg: change resolution and/or usage.
 
@@ -1081,8 +1086,8 @@ namespace {
                     std::tie(horizontalScaleFactor, verticalScaleFactor) =
                         config::GetScalingFactors(m_settingScaling, m_settingAnamorphic);
 
-                    chainCreateInfo.width = roundUp((uint32_t)std::ceil(createInfo->width * horizontalScaleFactor), 2);
-                    chainCreateInfo.height = roundUp((uint32_t)std::ceil(createInfo->height * verticalScaleFactor), 2);
+                    chainCreateInfo.width = roundUp((uint32_t)std::ceil(savedWidth * horizontalScaleFactor), 2);
+                    chainCreateInfo.height = roundUp((uint32_t)std::ceil(savedHeight * verticalScaleFactor), 2);
                 }
 
                 // The post processor will draw a full-screen quad onto the final swapchain.
@@ -1441,6 +1446,26 @@ namespace {
                 return XR_ERROR_VALIDATION_FAILURE;
             }
 
+            // Assuming the type of m_swapchains is std::map<XrSwapchain, SwapchainState>
+            std::map<XrSwapchain, SwapchainState>::iterator swapchainIt;
+
+            // Look for the swapchain in the update map first
+            auto it = swapchainUpdateMap.find(swapchain);
+            if (it != swapchainUpdateMap.end()) {
+                // Found the swapchain in the update map
+                swapchainIt = m_swapchains.find(it->second); // Find the updated swapchain in m_swapchains
+                Log("test");
+            } else {
+                // If not found in the update map, look in the original map
+                swapchainIt = m_swapchains.find(swapchain);
+            }
+
+            auto swapchainIt = m_swapchains.find(swapchain);
+            if (swapchainIt == m_swapchains.end()) {
+                Log("invalid swapchain wait");
+                return XR_SUCCESS;
+            }
+
             TraceLoggingWrite(
                 g_traceProvider, "xrWaitSwapchainImage", TLPArg(swapchain, "Swapchain"), TLArg(waitInfo->timeout));
 
@@ -1459,10 +1484,27 @@ namespace {
 
             TraceLoggingWrite(g_traceProvider, "xrAcquireSwapchainImage", TLPArg(swapchain, "Swapchain"));
 
-            auto swapchainIt = m_swapchains.find(swapchain);
+            // Assuming the type of m_swapchains is std::map<XrSwapchain, SwapchainState>
+            std::map<XrSwapchain, SwapchainState>::iterator swapchainIt;
+
+            // Look for the swapchain in the update map first
+            auto it = swapchainUpdateMap.find(swapchain);
+            if (it != swapchainUpdateMap.end()) {
+                // Found the swapchain in the update map
+                swapchainIt = m_swapchains.find(it->second); // Find the updated swapchain in m_swapchains
+                Log("test");
+            } else {
+                // If not found in the update map, look in the original map
+                swapchainIt = m_swapchains.find(swapchain);
+            }
             if (swapchainIt != m_swapchains.end()) {
                 if (m_frameAnalyzer) {
                     m_frameAnalyzer->onAcquireSwapchain(swapchain);
+                }
+
+                if (m_settingPreviousScaling != m_configManager->peekValue(config::SettingScaling)) {
+                    m_settingPreviousScaling = m_configManager->peekValue(config::SettingScaling);
+                    swapchainIt->second.resolutionChangePending = true;
                 }
 
                 // Perform the release now in case it was delayed.
@@ -1473,6 +1515,9 @@ namespace {
                     swapchainIt->second.delayedRelease = false;
                     CHECK_XRCMD(OpenXrApi::xrReleaseSwapchainImage(swapchain, &releaseInfo));
                 }
+            } else {
+                Log("invalid swapchain in acquire");
+                return XR_SUCCESS;
             }
 
             const XrResult result = OpenXrApi::xrAcquireSwapchainImage(swapchain, acquireInfo, index);
@@ -1493,6 +1538,39 @@ namespace {
             return result;
         }
 
+        void changeSwapchainResolution(XrSession session, XrSwapchain oldSwapchainHandle) {
+            auto swapchainIt = m_swapchains.find(oldSwapchainHandle);
+            if (swapchainIt == m_swapchains.end()) {
+                Log("Swapchain not found\n");
+                return;
+            }
+
+            SwapchainState oldState = std::move(swapchainIt->second);
+            m_swapchains.erase(swapchainIt);
+
+            // Destroy the existing swapchain
+            if (XR_FAILED(xrDestroySwapchain(oldSwapchainHandle))) {
+                Log("Failed to destroy swapchain\n");
+                return;
+            }
+
+            // Create a new swapchain
+            XrSwapchain newSwapchain;
+            if (XR_FAILED(xrCreateSwapchain(session, &chainCreateInfo, &newSwapchain))) {
+                Log("Failed to create swapchain with new resolution\n");
+                return;
+            }
+
+            // Reinitialize the state for the new swapchain
+            SwapchainState newState;
+
+            // Add the new swapchain and its state to the map
+            m_swapchains[newSwapchain] = std::move(newState);
+            swapchainUpdateMap[oldSwapchainHandle] = newSwapchain;
+
+            // Additional setup as needed
+        }
+
         XrResult xrReleaseSwapchainImage(XrSwapchain swapchain,
                                          const XrSwapchainImageReleaseInfo* releaseInfo) override {
             if (releaseInfo && releaseInfo->type != XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO) {
@@ -1500,15 +1578,22 @@ namespace {
             }
 
             TraceLoggingWrite(g_traceProvider, "xrReleaseSwapchainImage", TLPArg(swapchain, "Swapchain"));
-
             auto swapchainIt = m_swapchains.find(swapchain);
             if (swapchainIt != m_swapchains.end()) {
                 if (m_frameAnalyzer) {
                     m_frameAnalyzer->onReleaseSwapchain(swapchain);
                 }
 
+                if (swapchainIt->second.resolutionChangePending) {
+                    changeSwapchainResolution(m_vrSession, swapchain);
+                    swapchainIt->second.resolutionChangePending = false;
+                }
+
                 // Perform a delayed release: we still need to write to the swapchain in our xrEndFrame()!
                 swapchainIt->second.delayedRelease = true;
+                return XR_SUCCESS;
+            } else {
+                Log("invalid swapchain release");
                 return XR_SUCCESS;
             }
 
@@ -2684,7 +2769,8 @@ namespace {
 
                         auto swapchainIt = m_swapchains.find(view.subImage.swapchain);
                         if (swapchainIt == m_swapchains.end()) {
-                            throw std::runtime_error("Swapchain is not registered");
+                            Log("Swapchain is not registered, skipping frame\n");
+                            return XR_SUCCESS; // Exit the function early.
                         }
                         auto& swapchainState = swapchainIt->second;
                         auto& swapchainImages = swapchainState.images[swapchainState.acquiredImageIndex];
@@ -2714,7 +2800,8 @@ namespace {
                                 if (depth->subImage.imageArrayIndex == view.subImage.imageArrayIndex) {
                                     auto depthSwapchainIt = m_swapchains.find(depth->subImage.swapchain);
                                     if (depthSwapchainIt == m_swapchains.end()) {
-                                        throw std::runtime_error("Swapchain is not registered");
+                                        Log("Swapchain is not registered, skipping frame\n");
+                                        return XR_SUCCESS; // Exit the function early.
                                     }
                                     auto& depthSwapchainState = depthSwapchainIt->second;
 
@@ -2807,6 +2894,11 @@ namespace {
                                     correctedProjectionViews[eye].subImage.imageRect.offset.x * horizontalScaleFactor);
                                 correctedProjectionViews[eye].subImage.imageRect.offset.y = (uint32_t)std::ceil(
                                     correctedProjectionViews[eye].subImage.imageRect.offset.y * verticalScaleFactor);
+
+                                correctedProjectionViews[eye].subImage.imageRect.extent.width = (uint32_t)std::ceil(
+                                    correctedProjectionViews[eye].subImage.imageRect.extent.width * 0.2);
+                                correctedProjectionViews[eye].subImage.imageRect.extent.height = (uint32_t)std::ceil(
+                                    correctedProjectionViews[eye].subImage.imageRect.extent.height * 0.2);
                             }
 
                             // Small adjustments to avoid pixel off-texture due to rounding error.
@@ -3434,8 +3526,11 @@ namespace {
         std::shared_ptr<graphics::IDevice> m_graphicsDevice;
         std::map<XrSwapchain, SwapchainState> m_swapchains;
 
+        XrSwapchainCreateInfo chainCreateInfo;
+
         config::ScalingType m_upscaleMode{config::ScalingType::None};
         int m_settingScaling{100};
+        int m_settingPreviousScaling{100};
         int m_settingAnamorphic{-100};
         float m_mipMapBiasForUpscaling{0.f};
 
@@ -3449,6 +3544,8 @@ namespace {
         std::shared_ptr<graphics::IImageProcessor> m_upscaler;
         std::shared_ptr<graphics::IImageProcessor> m_postProcessor;
         std::shared_ptr<graphics::IVariableRateShader> m_variableRateShader;
+
+        std::map<XrSwapchain, XrSwapchain> swapchainUpdateMap;
 
         std::vector<int> m_keyModifiers;
         int m_keyScreenshot;

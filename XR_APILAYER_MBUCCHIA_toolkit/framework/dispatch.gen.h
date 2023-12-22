@@ -34,6 +34,7 @@ namespace LAYER_NAMESPACE
 	{
 	private:
 		XrInstance m_instance{ XR_NULL_HANDLE };
+        XrSystemId m_systemId;
 		std::string m_applicationName;
 		std::vector<std::string> m_upstreamLayers;
 
@@ -50,6 +51,11 @@ namespace LAYER_NAMESPACE
 			return m_instance;
 		}
 
+        XrSystemId GetXrSystemId() const
+        {
+            return m_systemId;
+        }
+
 		const std::string& GetApplicationName() const
 		{
 			return m_applicationName;
@@ -60,6 +66,11 @@ namespace LAYER_NAMESPACE
 			m_xrGetInstanceProcAddr = pfn_xrGetInstanceProcAddr;
 			m_instance = instance;
 		}
+
+        void SetXrSystemId(XrSystemId systemId) 
+        {
+            m_systemId = systemId;
+        }
 
 		void SetUpstreamLayers(std::vector<std::string>& upstreamLayers)
 		{
@@ -245,6 +256,14 @@ namespace LAYER_NAMESPACE
 		}
 	private:
 		PFN_xrEndSession m_xrEndSession{ nullptr };
+
+	public:
+		virtual XrResult xrRequestExitSession(XrSession session)
+		{
+			return m_xrRequestExitSession(session);
+		}
+	private:
+		PFN_xrRequestExitSession m_xrRequestExitSession{ nullptr };
 
 	public:
 		virtual XrResult xrWaitFrame(XrSession session, const XrFrameWaitInfo* frameWaitInfo, XrFrameState* frameState)

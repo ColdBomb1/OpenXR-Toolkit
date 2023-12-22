@@ -997,6 +997,11 @@ namespace LAYER_NAMESPACE
 			throw std::runtime_error("Failed to resolve xrReleaseSwapchainImage");
 		}
 		TraceLoggingWrite(g_traceProvider, "ProcAddr", TLArg("xrReleaseSwapchainImage", "Name"), TLPArg(m_xrReleaseSwapchainImage, "Ptr"));
+		if (XR_FAILED(m_xrGetInstanceProcAddr(m_instance, "xrRequestExitSession", reinterpret_cast<PFN_xrVoidFunction*>(&m_xrRequestExitSession))))
+		{
+			throw std::runtime_error("Failed to resolve xrRequestExitSession");
+		}
+		TraceLoggingWrite(g_traceProvider, "ProcAddr", TLArg("xrRequestExitSession", "Name"), TLPArg(m_xrRequestExitSession, "Ptr"));
 		if (XR_FAILED(m_xrGetInstanceProcAddr(m_instance, "xrStringToPath", reinterpret_cast<PFN_xrVoidFunction*>(&m_xrStringToPath))))
 		{
 			throw std::runtime_error("Failed to resolve xrStringToPath");

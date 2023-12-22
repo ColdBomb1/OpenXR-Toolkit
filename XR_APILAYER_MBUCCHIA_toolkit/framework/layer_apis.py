@@ -43,6 +43,7 @@ requested_functions = [
     "xrEnumerateViewConfigurationViews",
     "xrEnumerateSwapchainFormats",
     "xrCreateSwapchain",
+    "xrRequestExitSession",
     "xrEnumerateSwapchainImages",
     "xrWaitSwapchainImage",
     "xrAcquireSwapchainImage",
